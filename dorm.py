@@ -145,12 +145,12 @@ class Query:
         for row in self.table.raw(sql, params):
             yield {f: row[f] for f in fields}
 
-    def values_list(self, *fields, **kwargs):
+    def values_list(self, *fields, flat=False):
         if not fields:
             fields = list(self.table.columns.keys())
         sql, params = self.to_sql(fields)
         for row in self.table.raw(sql, params):
-            if kwargs.get("flat"):
+            if flat:
                 for f in fields:
                     yield row[f]
             else:

@@ -66,7 +66,7 @@ class MigrationTests(unittest.TestCase):
     def setUp(self):
         self.db_path = "test.db"
         self.migration_dir = os.path.join(os.path.dirname(__file__), "test_migrations")
-        os.makedirs(self.migration_dir)
+        os.makedirs(self.migration_dir, exist_ok=True)
         with open(os.path.join(self.migration_dir, "__init__.py"), "w") as f:
             f.write("\n")
 
