@@ -47,6 +47,7 @@ class TableTests(unittest.TestCase):
         Book.insert(name="1 Bourbon", year=2020)
         Book.insert(name="1 Scotch", year=2020)
         Book.insert(name="1 Beer", year=2021)
+        self.assertEqual(Book.query(year=2020).count(), 2)
         self.assertEqual(
             list(Book.query().order("-year", "name").values_list("name", flat=True)),
             ["1 Beer", "1 Bourbon", "1 Scotch"],
@@ -99,6 +100,44 @@ class MigrationTests(unittest.TestCase):
         Book.update({"year": 2019}, author="Dan Watson")
         self.assertEqual(Book.query(year=2019).get("author"), "Dan Watson")
         del Book.columns["author"]
+
+
+class Person(darby.Table):
+    pass
+
+
+class InspectionTests(unittest.TestCase):
+    def setUp(self):
+        self.db_path = "test_inspect.db"
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            """
+            create table people (
+                pid integer primary key,
+                name text not null,
+                age int default 0,
+                height real default 0.0,
+                profile text)
+        """
+        )
+        conn.execute(
+            """
+            insert into people (pid, name, age, height, profile) values
+                (1, 'Dan', 38, 72.0, 'hello world'),
+                (4, 'Alexa', 37, 62.5, 'leave me out of this')
+        """
+        )
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        os.remove(self.db_path)
+
+    def test_inspect(self):
+        conn = darby.setup(self.db_path)
+        Person.bind(conn, inspect="people")
+        self.assertEqual(Person.query().count(), 2)
+        self.assertEqual(Person.query(pk=4).get("name"), "Alexa")
 
 
 if __name__ == "__main__":

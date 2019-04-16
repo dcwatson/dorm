@@ -32,9 +32,16 @@ def snake(name):
 
 class Column:
     def __init__(
-        self, sql_type, primary_key=False, default=None, to_python=None, to_sql=None
+        self,
+        sql_type,
+        notnull=False,
+        primary_key=False,
+        default=None,
+        to_python=None,
+        to_sql=None,
     ):
         self.sql_type = sql_type
+        self.notnull = notnull
         self.primary_key = primary_key
         self.default = default
         self.to_python = to_python or (lambda value: value)
@@ -42,6 +49,8 @@ class Column:
 
     def typedef(self, name):
         sql = "{} {}".format(name, self.sql_type)
+        if self.notnull:
+            sql += " NOT NULL"
         if self.primary_key:
             if not self.sql_type.lower().startswith("int"):
                 raise DatabaseError(
@@ -55,9 +64,9 @@ class Column:
 
 
 PK = Column("integer", primary_key=True)
-String = Column("varchar NOT NULL", default="''")
+String = Column("varchar", notnull=True, default="''")
 Integer = Column("integer")
-Timestamp = Column("timestamp NOT NULL", default="CURRENT_TIMESTAMP")
+Timestamp = Column("timestamp", notnull=True, default="CURRENT_TIMESTAMP")
 
 
 class Query:
@@ -104,9 +113,10 @@ class Query:
         return first if field is None else getattr(first, field, default)
 
     def to_sql(self, selects=None):
-        selects = list(self.table.columns.keys())
-        if self.table.__pk__ not in selects:
-            selects.insert(0, self.table.__pk__)
+        if selects is None:
+            selects = list(self.table.columns.keys())
+            if self.table.__pk__ not in selects:
+                selects.insert(0, self.table.__pk__)
         sql = "SELECT {} FROM {}".format(", ".join(selects), self.table.__table__)
         where = []
         params = []
@@ -128,11 +138,15 @@ class Query:
         return sql, params
 
     def values(self, *fields):
+        if not fields:
+            fields = list(self.table.columns.keys())
         sql, params = self.to_sql(fields)
         for row in self.table.raw(sql, params):
             yield {f: row[f] for f in fields}
 
     def values_list(self, *fields, flat=False):
+        if not fields:
+            fields = list(self.table.columns.keys())
         sql, params = self.to_sql(fields)
         for row in self.table.raw(sql, params):
             if flat:
@@ -140,6 +154,10 @@ class Query:
                     yield row[f]
             else:
                 yield [row[f] for f in fields]
+
+    def count(self):
+        sql, params = self.to_sql(selects=["count(*)"])
+        return self.table.raw(sql, params).fetchone()[0]
 
     def __iter__(self):
         sql, params = self.to_sql()
@@ -157,6 +175,8 @@ class Table:
     __table__ = None
     __connection__ = None
     __pk__ = "rowid"
+
+    columns = {}
 
     def __init__(self, **fields):
         pk = fields.pop("pk", None)
@@ -205,9 +225,19 @@ class Table:
 
     @classmethod
     def bind(cls, connection, inspect=False):
+        if isinstance(inspect, str):
+            cls.__table__ = inspect
         if not cls.__table__:
             cls.__table__ = snake(cls.__name__)
         cls.__connection__ = connection
+        if inspect:
+            for row in cls.raw("pragma table_info({})".format(cls.__table__)):
+                cls.columns[row["name"]] = Column(
+                    row["type"],
+                    notnull=row["notnull"],
+                    primary_key=row["pk"],
+                    default=row["dflt_value"],
+                )
         for name, col in cls.columns.items():
             if col.primary_key:
                 cls.__pk__ = name
