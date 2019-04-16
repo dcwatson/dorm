@@ -2,24 +2,24 @@
 # -*- coding: utf-8 -*-
 
 import unittest
-import darby
+import dorm
 import sqlite3
 import shutil
 import os
 import sys
 
 
-class Book(darby.Table):
-    columns = {"name": darby.String, "year": darby.Integer}
+class Book(dorm.Table):
+    columns = {"name": dorm.String, "year": dorm.Integer}
 
 
-class CustomKey(darby.Table):
-    columns = {"key": darby.PK, "label": darby.String}
+class CustomKey(dorm.Table):
+    columns = {"key": dorm.PK, "label": dorm.String}
 
 
 class TableTests(unittest.TestCase):
     def setUp(self):
-        darby.setup(models=[Book, CustomKey])
+        dorm.setup(models=[Book, CustomKey])
 
     def test_lifecycle(self):
         book = Book.insert(name="First Book", year=2019)
@@ -29,12 +29,12 @@ class TableTests(unittest.TestCase):
 
     def test_get(self):
         self.assertIsNone(Book.query(pk=1).get())
-        with self.assertRaises(darby.DoesNotExist):
+        with self.assertRaises(dorm.DoesNotExist):
             Book.query(pk=1).get(strict=True)
         Book.insert(name="First Book", year=2019)
         self.assertEqual(Book.query(name="First Book").get("year"), 2019)
         Book.insert(name="Second Book", year=2019)
-        with self.assertRaises(darby.MultipleObjects):
+        with self.assertRaises(dorm.MultipleObjects):
             Book.query(year=2019).get(strict=True)
 
     def test_insert_pk(self):
@@ -66,7 +66,7 @@ class MigrationTests(unittest.TestCase):
     def setUp(self):
         self.db_path = "test.db"
         self.migration_dir = os.path.join(os.path.dirname(__file__), "test_migrations")
-        os.makedirs(self.migration_dir, exist_ok=True)
+        os.makedirs(self.migration_dir)
         with open(os.path.join(self.migration_dir, "__init__.py"), "w") as f:
             f.write("\n")
 
@@ -77,32 +77,32 @@ class MigrationTests(unittest.TestCase):
 
     def test_generate(self):
         # Generate the migrations (but they aren't run until next setup).
-        darby.setup(
+        dorm.setup(
             self.db_path, models=[Book], migrations="test_migrations", generate=True
         )
-        self.assertFalse(darby.Migration.exists())
+        self.assertFalse(dorm.Migration.exists())
         self.assertFalse(Book.exists())
         # This will run any previously created migrations.
-        darby.setup(self.db_path, models=[Book], migrations="test_migrations")
-        self.assertTrue(darby.Migration.exists())
+        dorm.setup(self.db_path, models=[Book], migrations="test_migrations")
+        self.assertTrue(dorm.Migration.exists())
         self.assertTrue(Book.exists())
         Book.insert(name="Test Book", year=2019)
         # Add a new column, queries will fail until a new migration is generated/applied.
-        Book.columns["author"] = darby.String
+        Book.columns["author"] = dorm.String
         with self.assertRaises(sqlite3.OperationalError):
             Book.query().get()
         # Generate a migration for the new column.
-        darby.setup(
+        dorm.setup(
             self.db_path, models=[Book], migrations="test_migrations", generate=True
         )
         # Run the migration.
-        darby.setup(self.db_path, models=[Book], migrations="test_migrations")
+        dorm.setup(self.db_path, models=[Book], migrations="test_migrations")
         Book.update({"year": 2019}, author="Dan Watson")
         self.assertEqual(Book.query(year=2019).get("author"), "Dan Watson")
         del Book.columns["author"]
 
 
-class Person(darby.Table):
+class Person(dorm.Table):
     pass
 
 
@@ -134,7 +134,7 @@ class InspectionTests(unittest.TestCase):
         os.remove(self.db_path)
 
     def test_inspect(self):
-        conn = darby.setup(self.db_path)
+        conn = dorm.setup(self.db_path)
         Person.bind(conn, inspect="people")
         self.assertEqual(Person.query().count(), 2)
         self.assertEqual(Person.query(pk=4).get("name"), "Alexa")

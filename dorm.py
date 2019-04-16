@@ -10,6 +10,9 @@ import re
 import sqlite3
 
 
+version_info = (0, 1, 0)
+version = ".".join(str(v) for v in version_info)
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,13 +104,11 @@ class Query:
         objects = list(self.limit(2 if strict else 1))
         if strict and not objects:
             raise DoesNotExist(
-                "Query returned no {} objects.".format(self.table.__class__.__name__)
+                "Query returned no {} objects.".format(self.table.__name__)
             )
         if strict and len(objects) > 1:
             raise MultipleObjects(
-                "Query returned multiple {} objects.".format(
-                    self.table.__class__.__name__
-                )
+                "Query returned multiple {} objects.".format(self.table.__name__)
             )
         first = objects[0] if objects else default
         return first if field is None else getattr(first, field, default)
@@ -144,12 +145,12 @@ class Query:
         for row in self.table.raw(sql, params):
             yield {f: row[f] for f in fields}
 
-    def values_list(self, *fields, flat=False):
+    def values_list(self, *fields, **kwargs):
         if not fields:
             fields = list(self.table.columns.keys())
         sql, params = self.to_sql(fields)
         for row in self.table.raw(sql, params):
-            if flat:
+            if kwargs.get("flat"):
                 for f in fields:
                     yield row[f]
             else:
@@ -366,7 +367,7 @@ def setup(db_path=":memory:", models=None, migrations=None, generate=False, new=
     if isinstance(models, str):
         mod = importlib.import_module(models)
         for name, cls in inspect.getmembers(mod, inspect.isclass):
-            if issubclass(cls, mod.darby.Table) and cls not in tables:
+            if issubclass(cls, Table) and cls not in tables:
                 tables.append(cls.bind(connection))
     elif isinstance(models, (list, tuple)):
         for cls in models:
