@@ -2,8 +2,8 @@
 
 [![Build Status](https://travis-ci.org/dcwatson/dorm.svg?branch=master)](https://travis-ci.org/dcwatson/dorm)
 
-A small SQLite ORM for Python 3. You probably shouldn't use this, but if you want to anyway, look at the
-[tests](https://github.com/dcwatson/dorm/blob/master/tests.py) for how to do so.
+A small SQLite ORM for Python 3. You probably shouldn't use this, but if you want to anyway, `pip install dorm`
+and look at the [tests](https://github.com/dcwatson/dorm/blob/master/tests.py) for how to do so.
 
 
 ## Migrations
