@@ -1,12 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import unittest
-import dorm
-import sqlite3
-import shutil
+import asyncio
 import os
+import shutil
+import sqlite3
 import sys
+import unittest
+
+import dorm
 
 
 class Book(dorm.Table):
@@ -49,7 +51,11 @@ class TableTests(unittest.TestCase):
         Book.insert(name="1 Beer", year=2021)
         self.assertEqual(Book.query(year=2020).count(), 2)
         self.assertEqual(
-            list(Book.query().order("-year", "name").values_list("name", flat=True)),
+            list(
+                Book.query()
+                .order("-year", "name")
+                .values("name", lists=True, flat=True)
+            ),
             ["1 Beer", "1 Bourbon", "1 Scotch"],
         )
         self.assertEqual(
@@ -97,7 +103,7 @@ class MigrationTests(unittest.TestCase):
         )
         # Run the migration.
         dorm.setup(self.db_path, models=[Book], migrations="test_migrations")
-        Book.update({"year": 2019}, author="Dan Watson")
+        Book.query(year=2019).update(author="Dan Watson")
         self.assertEqual(Book.query(year=2019).get("author"), "Dan Watson")
         del Book.columns["author"]
 
@@ -138,6 +144,86 @@ class InspectionTests(unittest.TestCase):
         Person.bind(conn, inspect="people")
         self.assertEqual(Person.query().count(), 2)
         self.assertEqual(Person.query(pk=4).get("name"), "Alexa")
+
+
+def async_test(coro):
+    def wrapper(*args, **kwargs):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro(*args, **kwargs))
+        finally:
+            loop.close()
+
+    return wrapper
+
+
+class AsyncBook(dorm.AsyncTable):
+    columns = {"name": dorm.String, "year": dorm.Integer}
+
+
+class AsyncCustomKey(dorm.AsyncTable):
+    columns = {"key": dorm.PK, "label": dorm.String}
+
+
+class AsyncTableTests(unittest.TestCase):
+    def setUp(self):
+        dorm.setup(models=[AsyncBook, AsyncCustomKey])
+
+    @async_test
+    async def test_lifecycle(self):
+        book = await AsyncBook.insert(name="First Book", year=2019)
+        book.year = 2020
+        await book.save()
+        await book.refresh()
+        self.assertEqual(book.year, 2020)
+
+    @async_test
+    async def test_get(self):
+        self.assertIsNone(await AsyncBook.query(pk=1).get())
+        with self.assertRaises(dorm.DoesNotExist):
+            await AsyncBook.query(pk=1).get(strict=True)
+        await AsyncBook.insert(name="First Book", year=2019)
+        self.assertEqual(await AsyncBook.query(name="First Book").get("year"), 2019)
+        await AsyncBook.insert(name="Second Book", year=2019)
+        with self.assertRaises(dorm.MultipleObjects):
+            await AsyncBook.query(year=2019).get(strict=True)
+
+    @async_test
+    async def test_insert_pk(self):
+        book = await AsyncBook.insert(pk=999, name="Some Book", year=2019)
+        self.assertEqual(book.pk, 999)
+        with self.assertRaises(sqlite3.IntegrityError):
+            await AsyncBook.insert(pk=999, name="Another Book", year=2019)
+
+    @async_test
+    async def test_order(self):
+        await AsyncBook.insert(name="1 Bourbon", year=2020)
+        await AsyncBook.insert(name="1 Scotch", year=2020)
+        await AsyncBook.insert(name="1 Beer", year=2021)
+        self.assertEqual(await AsyncBook.query(year=2020).count(), 2)
+        self.assertEqual(
+            [
+                name
+                async for name in AsyncBook.query()
+                .order("-year", "name")
+                .values("name", lists=True, flat=True)
+            ],
+            ["1 Beer", "1 Bourbon", "1 Scotch"],
+        )
+        self.assertEqual(
+            [
+                name
+                async for name in AsyncBook.query(year=2020)
+                .order("-name")
+                .values("name")
+            ],
+            [{"name": "1 Scotch"}, {"name": "1 Bourbon"}],
+        )
+
+    @async_test
+    async def test_custom_pk(self):
+        obj = await AsyncCustomKey.insert(pk=13, label="Lucky 13")
+        self.assertEqual(obj.pk, obj.key)
 
 
 if __name__ == "__main__":

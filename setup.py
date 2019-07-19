@@ -2,7 +2,6 @@ from setuptools import setup
 
 import dorm
 
-
 with open("README.md", "r") as readme:
     long_description = readme.read()
 

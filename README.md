@@ -21,3 +21,14 @@ python -m dorm --db=books.db --models=project.models --migrations=project.migrat
 Existing migrations are run automatically when calling `dorm.setup` with the `migrations` argument set. This
 is to ensure a good first-run experience and automatic upgrades for end users. If `migrations` is not set,
 any detected schema changes will be applied automatically to the database.
+
+
+## Asynchronous Tables
+
+Dorm can be used with `asyncio` by simply subclassing `AsyncTable` instead of `Table`. The `insert` class method,
+and `save` and `refresh` instance methods become coroutines in that case. Also, the `query` class method will return
+an `AsyncQuery` instance, with coroutines for `count`, `values`, `get`, `update`, and iteration via `__aiter__`
+(i.e. `async for obj in MyTable.query()`).
+
+Migrations and introspection still happen synchronously, since they tend not to happen during times where they would
+benefit from being asyncronous.
