@@ -16,12 +16,16 @@ class Book(dorm.Table):
 
 
 class CustomKey(dorm.Table):
-    columns = {"key": dorm.PK, "label": dorm.String}
+    columns = {"key": dorm.PK, "label": dorm.String, "data": dorm.Binary}
+
+
+class Fields(dorm.Table):
+    columns = {"email": dorm.Email, "json": dorm.JSON}
 
 
 class TableTests(unittest.TestCase):
     def setUp(self):
-        dorm.setup(models=[Book, CustomKey])
+        dorm.setup(models=[Book, CustomKey, Fields])
 
     def test_lifecycle(self):
         book = Book.insert(name="First Book", year=2019)
@@ -67,6 +71,29 @@ class TableTests(unittest.TestCase):
         obj = CustomKey.insert(pk=13, label="Lucky 13")
         self.assertEqual(obj.pk, obj.key)
 
+    def test_binary(self):
+        data = bytes(range(256))
+        obj = CustomKey.insert(pk=13, label="Lucky 13", data=data)
+        obj.refresh()
+        self.assertEqual(obj.data, data)
+        self.assertEqual(data, CustomKey.query(pk=13).get("data"))
+
+    def test_json(self):
+        json = {"hello": {"world": 123, "test": [1, 2, "hi"]}}
+        obj = Fields.insert(pk=28, json=json)
+        obj.refresh()
+        self.assertEqual(obj.json, json)
+        self.assertEqual(json, Fields.query().get("json"))
+        self.assertEqual([json], Fields.query().values("json", lists=True, flat=True))
+        Fields.query().update(json=[1, 2, 3])
+        self.assertEqual([1, 2, 3], Fields.query().get("json"))
+
+    def test_email(self):
+        obj = Fields.insert(pk=29, email="  Dan.Watson@example.COM  ")
+        obj.refresh()
+        self.assertEqual(obj.email, "dan.watson@example.com")
+        self.assertEqual(obj.json, {})
+
 
 class MigrationTests(unittest.TestCase):
     def setUp(self):
@@ -83,13 +110,12 @@ class MigrationTests(unittest.TestCase):
 
     def test_generate(self):
         # Generate the migrations (but they aren't run until next setup).
-        dorm.setup(
-            self.db_path, models=[Book], migrations="test_migrations", generate=True
-        )
+        params = dorm.setup(self.db_path, models=[Book], migrations="test_migrations")
+        dorm.generate(*params)
         self.assertFalse(dorm.Migration.exists())
         self.assertFalse(Book.exists())
         # This will run any previously created migrations.
-        dorm.setup(self.db_path, models=[Book], migrations="test_migrations")
+        dorm.migrate(*params)
         self.assertTrue(dorm.Migration.exists())
         self.assertTrue(Book.exists())
         Book.insert(name="Test Book", year=2019)
@@ -98,11 +124,10 @@ class MigrationTests(unittest.TestCase):
         with self.assertRaises(sqlite3.OperationalError):
             Book.query().get()
         # Generate a migration for the new column.
-        dorm.setup(
-            self.db_path, models=[Book], migrations="test_migrations", generate=True
-        )
+        dorm.generate(*params)
         # Run the migration.
-        dorm.setup(self.db_path, models=[Book], migrations="test_migrations")
+        dorm.migrate(*params)
+        # dorm.setup(self.db_path, models=[Book], migrations="test_migrations")
         Book.query(year=2019).update(author="Dan Watson")
         self.assertEqual(Book.query(year=2019).get("author"), "Dan Watson")
         del Book.columns["author"]
@@ -140,8 +165,8 @@ class InspectionTests(unittest.TestCase):
         os.remove(self.db_path)
 
     def test_inspect(self):
-        conn = dorm.setup(self.db_path)
-        Person.bind(conn, inspect="people")
+        connection, tables, migrations = dorm.setup(self.db_path)
+        Person.bind(connection, inspect="people")
         self.assertEqual(Person.query().count(), 2)
         self.assertEqual(Person.query(pk=4).get("name"), "Alexa")
 
@@ -202,21 +227,13 @@ class AsyncTableTests(unittest.TestCase):
         await AsyncBook.insert(name="1 Beer", year=2021)
         self.assertEqual(await AsyncBook.query(year=2020).count(), 2)
         self.assertEqual(
-            [
-                name
-                async for name in AsyncBook.query()
-                .order("-year", "name")
-                .values("name", lists=True, flat=True)
-            ],
+            await AsyncBook.query()
+            .order("-year", "name")
+            .values("name", lists=True, flat=True),
             ["1 Beer", "1 Bourbon", "1 Scotch"],
         )
         self.assertEqual(
-            [
-                name
-                async for name in AsyncBook.query(year=2020)
-                .order("-name")
-                .values("name")
-            ],
+            await AsyncBook.query(year=2020).order("-name").values("name"),
             [{"name": "1 Scotch"}, {"name": "1 Bourbon"}],
         )
 

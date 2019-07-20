@@ -4,14 +4,16 @@ import datetime
 import importlib
 import inspect
 import itertools
+import json
 import logging
 import os
 import pkgutil
 import re
 import sqlite3
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
-version_info = (0, 2, 0)
+version_info = (0, 3, 0)
 version = ".".join(str(v) for v in version_info)
 
 logger = logging.getLogger(__name__)
@@ -34,10 +36,15 @@ def snake(name):
     return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
+def normalize_email(email):
+    return email.strip().lower()
+
+
 class Column:
     def __init__(
         self,
         sql_type,
+        unique=False,
         notnull=False,
         primary_key=False,
         default=None,
@@ -45,6 +52,7 @@ class Column:
         to_sql=None,
     ):
         self.sql_type = sql_type
+        self.unique = unique
         self.notnull = notnull
         self.primary_key = primary_key
         self.default = default
@@ -55,6 +63,8 @@ class Column:
         sql = "{} {}".format(name, self.sql_type)
         if self.notnull:
             sql += " NOT NULL"
+        if self.unique:
+            sql += " UNIQUE"
         if self.primary_key:
             if not self.sql_type.lower().startswith("int"):
                 raise DatabaseError(
@@ -68,9 +78,16 @@ class Column:
 
 
 PK = Column("integer", primary_key=True)
-String = Column("varchar", notnull=True, default="''")
+String = Column("text", notnull=True, default="''")
+UniqueString = Column("text", unique=True, notnull=True)
 Integer = Column("integer")
 Timestamp = Column("timestamp", notnull=True, default="CURRENT_TIMESTAMP")
+Binary = Column("blob")
+Email = Column("text", notnull=True, default="''", to_sql=normalize_email)
+UniqueEmail = Column("text", unique=True, notnull=True, to_sql=normalize_email)
+JSON = Column(
+    "text", notnull=True, default="'{}'", to_python=json.loads, to_sql=json.dumps
+)
 
 
 class BaseQuery:
@@ -133,12 +150,14 @@ class BaseQuery:
         for field, value in fields.items():
             if field in self.table.columns:
                 updates.append("{} = ?".format(field))
-                params.append(value)
+                params.append(self.table.columns[field].to_sql(value))
             else:
                 logger.warning('Column "{}" does not exist'.format(field))
         for field, value in self._filters.items():
             wheres.append("{} = ?".format(field))
             params.append(value)
+        if not wheres:
+            wheres.append("1 = 1")
         sql = "UPDATE {} SET {} WHERE {}".format(
             self.table.__table__, ", ".join(updates), " AND ".join(wheres)
         )
@@ -156,19 +175,23 @@ class BaseQuery:
         first = objects[0] if objects else default
         return first if field is None else getattr(first, field, default)
 
-    def _values(self, row, lists=False, flat=False):
-        if lists:
-            if flat:
-                for v in row:
-                    yield v
+    def _values(self, rows, lists=False, flat=False):
+        values = []
+        for row in rows:
+            row_values = self.table.from_db(row, as_type=dict)
+            if lists:
+                if flat:
+                    for f in row.keys():
+                        values.append(row_values[f])
+                else:
+                    values.append([row_values[f] for f in row.keys()])
             else:
-                yield list(row)
-        else:
-            if flat:
-                for f in row.keys():
-                    yield {f: row[f]}
-            else:
-                yield {f: row[f] for f in row.keys()}
+                if flat:
+                    for f in row.keys():
+                        values.append({f: row_values[f]})
+                else:
+                    values.append({f: row_values[f] for f in row.keys()})
+        return values
 
 
 class Query(BaseQuery):
@@ -183,9 +206,8 @@ class Query(BaseQuery):
 
     def values(self, *fields, lists=False, flat=False):
         sql, params = self.to_sql(fields)
-        for row in self.table.fetch(sql, params):
-            for v in self._values(row, lists=lists, flat=flat):
-                yield v
+        rows = self.table.fetch(sql, params)
+        return self._values(rows, lists=lists, flat=flat)
 
     def get(self, field=None, default=None, strict=False):
         objects = list(self.limit(2 if strict else 1))
@@ -209,9 +231,8 @@ class AsyncQuery(BaseQuery):
 
     async def values(self, *fields, lists=False, flat=False):
         sql, params = self.to_sql(fields)
-        for row in await self.table.fetch(sql, params):
-            for v in self._values(row, lists=lists, flat=flat):
-                yield v
+        rows = await self.table.fetch(sql, params)
+        return self._values(rows, lists=lists, flat=flat)
 
     async def get(self, field=None, default=None, strict=False):
         objects = [obj async for obj in self.limit(2 if strict else 1)]
@@ -249,14 +270,16 @@ class BaseTable:
     pk = property(get_pk, set_pk)
 
     @classmethod
-    def from_db(cls, row):
+    def from_db(cls, row, as_type=None):
         fields = {}
         for key in row.keys():
             if key in cls.columns:
                 fields[key] = cls.columns[key].to_python(row[key])
             else:
                 fields[key] = row[key]
-        return cls(**fields)
+        if as_type is None:
+            as_type = cls
+        return as_type(**fields)
 
     @classmethod
     def bind(cls, connection, inspect=False):
@@ -452,12 +475,40 @@ class Migration(Table):
         for name in sorted(migration_names):
             # TODO: select all applied, and check for old skipped migrations which may indicate merges
             if latest is None or name > latest:
-                mod = importlib.import_module("{}.{}".format(module.__name__, name))
+                modname = "{}.{}".format(module.__name__, name)
+                logger.info('Running migration "{}"'.format(modname))
+                mod = importlib.import_module(modname)
                 mod.forward(connection)
                 cls.insert(module=module.__name__, name=name)
 
 
-def setup(db_path=":memory:", models=None, migrations=None, generate=False, new=False):
+class Config:
+    database = ":memory:"
+    models = "models"
+    migrations = "migrations"
+    pythonpath = "."
+
+    valid_keys = set(["database", "models", "migrations", "pythonpath"])
+
+    def __init__(self, path):
+        self.path = path
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                for line in f:
+                    if line.strip() and not line.strip().startswith("#"):
+                        key, value = line.split("=", 1)
+                        key = key.strip()
+                        value = value.strip()
+                        if key in self.valid_keys:
+                            setattr(self, key, value)
+
+    def save(self):
+        with open(self.path, "w") as f:
+            for key in sorted(self.valid_keys):
+                f.write("{} = {}\n".format(key, getattr(self, key)))
+
+
+def setup(db_path=":memory:", models=None, migrations=None, migrate=True):
     connection = sqlite3.connect(db_path, check_same_thread=False)
     connection.isolation_level = None
     connection.row_factory = sqlite3.Row
@@ -465,52 +516,86 @@ def setup(db_path=":memory:", models=None, migrations=None, generate=False, new=
     # Generate a list of Table classes to find schema changes for.
     tables = []
     if isinstance(models, str):
-        mod = importlib.import_module(models)
-        for name, cls in inspect.getmembers(mod, inspect.isclass):
-            if issubclass(cls, BaseTable) and cls not in tables:
-                tables.append(cls.bind(connection))
+        try:
+            mod = importlib.import_module(models)
+            for name, cls in inspect.getmembers(mod, inspect.isclass):
+                if issubclass(cls, BaseTable) and cls not in tables:
+                    logger.debug('Binding model "{}.{}"'.format(models, name))
+                    tables.append(cls.bind(connection))
+        except ImportError:
+            logger.warning('Could not import models from "{}"'.format(models))
     elif isinstance(models, (list, tuple)):
         for cls in models:
             if issubclass(cls, BaseTable):
+                logger.debug(
+                    'Binding model "{}.{}"'.format(cls.__module__, cls.__name__)
+                )
                 tables.append(cls.bind(connection))
 
     # Migrate the database to either the latest migration (if using migrations), or the latest schema.
+    migrations_mod = None
     if migrations:
-        tables.append(Migration.bind(connection))
-        mod = importlib.import_module(migrations)
-        Migration.migrate(mod, connection)
-        if generate:
-            sql_statements = list(
-                itertools.chain.from_iterable(t.schema_changes() for t in tables)
-            )
-            if sql_statements or new:
-                Migration.write(mod, sql_statements)
+        try:
+            migrations_mod = importlib.import_module(migrations)
+            tables.append(Migration.bind(connection))
+            if migrate:
+                Migration.migrate(migrations_mod, connection)
+        except ImportError:
+            logger.warning('Could not import migrations from "{}"'.format(migrations))
     else:
         for sql in itertools.chain.from_iterable(t.schema_changes() for t in tables):
             connection.execute(sql)
 
-    return connection
+    return connection, tables, migrations_mod
+
+
+def configure(path="dorm.cfg"):
+    config = Config(path)
+    if config.pythonpath:
+        sys.path.insert(0, config.pythonpath)
+    connection, tables, migrations = setup(
+        config.database,
+        models=config.models,
+        migrations=config.migrations,
+        migrate=False,
+    )
+    return connection, tables, migrations
+
+
+def migrate(connection, tables, migrations):
+    Migration.migrate(migrations, connection)
+    logger.info("Migrations complete.")
+
+
+def generate(connection, tables, migrations):
+    sql_statements = list(
+        itertools.chain.from_iterable(t.schema_changes() for t in tables)
+    )
+    if sql_statements:
+        Migration.write(migrations, sql_statements)
+
+
+def newmigration(connection, tables, migrations):
+    Migration.write(migrations, [])
+
+
+def main():
+    logging.basicConfig(level=logging.DEBUG)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-c", "--config", default="dorm.cfg", help="The dorm config file to use."
+    )
+    parser.add_argument("command", choices=["init", "migrate", "generate", "new"])
+    args = parser.parse_args()
+    if args.command == "init":
+        Config(args.config).save()
+    else:
+        params = configure(args.config)
+        handler = {"migrate": migrate, "generate": generate, "new": newmigration}[
+            args.command
+        ]
+        handler(*params)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--db", default=":memory:", help="The database file to use.")
-    parser.add_argument(
-        "--models",
-        default=None,
-        help="The models package to look for Table classes in.",
-    )
-    parser.add_argument(
-        "--migrations", default=None, help="The package to store new migrations in."
-    )
-    parser.add_argument("command", choices=["migrate", "generate", "new"])
-    args = parser.parse_args()
-    generate = args.command in ("generate", "new")
-    new = args.command == "new"
-    setup(
-        args.db,
-        models=args.models,
-        migrations=args.migrations,
-        generate=generate,
-        new=new,
-    )
+    main()

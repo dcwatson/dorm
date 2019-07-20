@@ -16,6 +16,7 @@ setup(
     url="https://github.com/dcwatson/dorm",
     license="MIT",
     py_modules=["dorm"],
+    entry_points={"console_scripts": ["dorm=dorm:main"]},
     classifiers=[
         "Development Status :: 2 - Pre-Alpha",
         "Intended Audience :: Developers",
