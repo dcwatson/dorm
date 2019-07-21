@@ -87,6 +87,7 @@ class TableTests(unittest.TestCase):
         self.assertEqual([json], Fields.query().values("json", lists=True, flat=True))
         Fields.query().update(json=[1, 2, 3])
         self.assertEqual([1, 2, 3], Fields.query().get("json"))
+        self.assertEqual(Fields.query(json=[1, 2, 3]).count(), 1)
 
     def test_email(self):
         obj = Fields.insert(pk=29, email="  Dan.Watson@example.COM  ")

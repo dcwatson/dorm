@@ -13,7 +13,7 @@ import sqlite3
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-version_info = (0, 3, 0)
+version_info = (0, 4, 0)
 version = ".".join(str(v) for v in version_info)
 
 logger = logging.getLogger(__name__)
@@ -36,8 +36,8 @@ def snake(name):
     return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
-def normalize_email(email):
-    return email.strip().lower()
+def lower(text):
+    return str(text).strip().lower() if text is not None else None
 
 
 class Column:
@@ -45,7 +45,7 @@ class Column:
         self,
         sql_type,
         unique=False,
-        notnull=False,
+        null=True,
         primary_key=False,
         default=None,
         to_python=None,
@@ -53,15 +53,27 @@ class Column:
     ):
         self.sql_type = sql_type
         self.unique = unique
-        self.notnull = notnull
+        self.null = null
         self.primary_key = primary_key
         self.default = default
         self.to_python = to_python or (lambda value: value)
         self.to_sql = to_sql or (lambda value: value)
 
+    def __call__(self, **kwargs):
+        new_kwargs = {
+            "unique": self.unique,
+            "null": self.null,
+            "primary_key": self.primary_key,
+            "default": self.default,
+            "to_python": self.to_python,
+            "to_sql": self.to_sql,
+        }
+        new_kwargs.update(kwargs)
+        return self.__class__(self.sql_type, **new_kwargs)
+
     def typedef(self, name):
         sql = "{} {}".format(name, self.sql_type)
-        if self.notnull:
+        if not self.null:
             sql += " NOT NULL"
         if self.unique:
             sql += " UNIQUE"
@@ -78,15 +90,15 @@ class Column:
 
 
 PK = Column("integer", primary_key=True)
-String = Column("text", notnull=True, default="''")
-UniqueString = Column("text", unique=True, notnull=True)
+String = Column("text", null=False, default="''")
 Integer = Column("integer")
-Timestamp = Column("timestamp", notnull=True, default="CURRENT_TIMESTAMP")
+Timestamp = Column("timestamp")
+CurrentTimestamp = Timestamp(null=False, default="CURRENT_TIMESTAMP")
+Boolean = Column("boolean")
 Binary = Column("blob")
-Email = Column("text", notnull=True, default="''", to_sql=normalize_email)
-UniqueEmail = Column("text", unique=True, notnull=True, to_sql=normalize_email)
+Email = String(to_sql=lower)
 JSON = Column(
-    "text", notnull=True, default="'{}'", to_python=json.loads, to_sql=json.dumps
+    "text", null=False, default="'{}'", to_python=json.loads, to_sql=json.dumps
 )
 
 
@@ -128,6 +140,8 @@ class BaseQuery:
         params = []
         for field, value in self._filters.items():
             where.append("{} = ?".format(field))
+            if field in self.table.columns:
+                value = self.table.columns[field].to_sql(value)
             params.append(value)
         if where:
             sql += " WHERE {}".format(" AND ".join(where))
@@ -292,7 +306,7 @@ class BaseTable:
             for row in cls.raw("pragma table_info({})".format(cls.__table__)):
                 cls.columns[row["name"]] = Column(
                     row["type"],
-                    notnull=row["notnull"],
+                    null=not row["notnull"],
                     primary_key=row["pk"],
                     default=row["dflt_value"],
                 )
@@ -563,20 +577,22 @@ def configure(path="dorm.cfg"):
 
 
 def migrate(connection, tables, migrations):
-    Migration.migrate(migrations, connection)
-    logger.info("Migrations complete.")
+    if migrations:
+        Migration.migrate(migrations, connection)
+        logger.info("Migrations complete.")
 
 
 def generate(connection, tables, migrations):
     sql_statements = list(
         itertools.chain.from_iterable(t.schema_changes() for t in tables)
     )
-    if sql_statements:
+    if sql_statements and migrations:
         Migration.write(migrations, sql_statements)
 
 
 def newmigration(connection, tables, migrations):
-    Migration.write(migrations, [])
+    if migrations:
+        Migration.write(migrations, [])
 
 
 def main():
